@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>survivalbots — automaton ecosystem</title>
+<style>
+  :root { --bg:#0b0d10; --panel:#151a20; --ink:#e6ebf2; --mut:#7d8a99; --line:#232c38; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,sans-serif; }
+  header { padding:.9rem 1.4rem; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:1.15rem; }
+  header h1 b { color:#ffd166; }
+  header .sub { color:var(--mut); font-size:.8rem; }
+  main { max-width:980px; margin:1rem auto; padding:0 1rem; display:grid; gap:.9rem; }
+  .bar { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+  button { background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:.45rem .85rem; cursor:pointer; }
+  button.primary { background:#ffd166; color:#2b1d00; font-weight:700; border-color:#ffd166; }
+  .stat { margin-left:auto; color:var(--mut); font-size:.85rem; display:flex; gap:1rem; }
+  .stat b { font-variant-numeric:tabular-nums; }
+  .r { color:#ff6b6b; } .g { color:#51cf66; } .b { color:#4dabf7; }
+  canvas { width:100%; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+  .legend { display:flex; gap:1.2rem; color:var(--mut); font-size:.8rem; flex-wrap:wrap; }
+  .dot { display:inline-block; width:.7em; height:.7em; border-radius:50%; margin-right:.35em; vertical-align:baseline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>conway-automoton-<b>survivalbots</b></h1>
+  <div class="sub">an automaton survival ecology · zero dependencies</div>
+</header>
+<main>
+  <div class="bar">
+    <button id="play" class="primary">▶ Evolve</button>
+    <button id="step">Tick</button>
+    <button id="seed">Re-seed world</button>
+    <div class="stat">
+      <span class="r">red <b id="nR">0</b></span>
+      <span class="g">green <b id="nG">0</b></span>
+      <span class="b">blue <b id="nB">0</b></span>
+      <span>food <b id="nF">0</b></span>
+      <span>tick <b id="tick">0</b></span>
+    </div>
+  </div>
+  <canvas id="world" width="960" height="560"></canvas>
+  <div class="legend">
+    <span><span class="dot" style="background:#ff6b6b"></span>Red — hunter: eats any bot it catches</span>
+    <span><span class="dot" style="background:#51cf66"></span>Green — forager: eats food pellets</span>
+    <span><span class="dot" style="background:#4dabf7"></span>Blue — drone: lives on sunlight, dies of age</span>
+    <span><span class="dot" style="background:#f3f0d7"></span>Food — spawns near the center spring</span>
+  </div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const cv = $('#world'), ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const CELL = 8, COLS = Math.floor(W / CELL), ROWS = Math.floor(H / CELL);
+const cx = (v) => Math.floor(v / CELL), cyy = (v) => Math.floor(v / CELL);
+const rnd = (n) => Math.floor(Math.random() * n);
+
+let bots = [], food = [], tick = 0, timer = null, running = false;
+const OCC = new Map(); // cell -> bot (occupancy for fights & collisions)
+
+const KINDS = {
+  R: { color: '#ff6b6b', energy0: 70, speed: 3, sense: 9,  cost: 1.4, life: 2400 },
+  G: { color: '#51cf66', energy0: 60, speed: 2, sense: 7,  cost: 1.0, life: 2200 },
+  B: { color: '#4dabf7', energy0: 50, speed: 1, sense: 5,  cost: 0.5, life: 900  },
+};
+
+function makeBot(kind, x, y, energy) {
+  const k = KINDS[kind];
+  return { kind, x, y, e: energy ?? k.energy0, age: 0, dir: rnd(8) };
+}
+
+function seed() {
+  bots = []; food = []; tick = 0;
+  for (let i = 0; i < 14; i++) bots.push(makeBot('R', rnd(COLS), rnd(ROWS)));
+  for (let i = 0; i < 22; i++) bots.push(makeBot('G', rnd(COLS), rnd(ROWS)));
+  for (let i = 0; i < 22; i++) bots.push(makeBot('B', rnd(COLS), rnd(ROWS)));
+  for (let i = 0; i < 90; i++) food.push({ x: COLS / 2 + (rnd(41) - 20), y: ROWS / 2 + (rnd(23) - 11) });
+}
+
+const DIRS = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
+const dist2 = (ax, ay, bx, by) => (ax-bx)*(ax-bx) + (ay-by)*(ay-by);
+
+function findTarget(b, k, match) {
+  let best = null, bd = k.sense * k.sense;
+  for (const t of match === 'food' ? food : bots) {
+    if (t === b) continue;
+    if (match === 'prey' && t.kind === 'R') continue;      // hunters hunt hunters too
+    if (match === 'prey' && dist2(b.x, b.y, t.x, t.y) > bd) continue;
+    const d = dist2(b.x, b.y, t.x, t.y);
+    if (d <= bd) { bd = d; best = t; }
+  }
+  return best;
+}
+
+function remove(arr, t) { const i = arr.indexOf(t); if (i !== -1) arr.splice(i, 1); }
+
+function tickWorld() {
+  tick++;
+  // food spring: berries regrow near center
+  if (tick % 2 === 0 && food.length < 160) food.push({ x: COLS/2 + rnd(41)-20, y: ROWS/2 + rnd(23)-11 });
+
+  // rebuild occupancy
+  OCC.clear();
+  for (const b of bots) OCC.set(b.x + ',' + b.y, b);
+
+  const born = [];
+  for (const b of bots) {
+    const k = KINDS[b.kind];
+    b.age++;
+    b.e -= k.cost;
+
+    // sense & chase
+    let tgt = null;
+    if (b.kind === 'R') tgt = findTarget(b, k, 'prey');
+    else if (b.kind === 'G') tgt = findTarget(b, k, 'food');
+    if (!tgt && b.kind !== 'B') { // wander
+      if (Math.random() < 0.3) b.dir = rnd(8);
+      tgt = { x: b.x + DIRS[b.dir][0] * 4, y: b.y + DIRS[b.dir][1] * 4 };
+    }
+    if (tgt) {
+      const dx = Math.sign(tgt.x - b.x), dy = Math.sign(tgt.y - b.y);
+      const nx = Math.max(0, Math.min(COLS - 1, b.x + dx));
+      const ny = Math.max(0, Math.min(ROWS - 1, b.y + dy));
+      const key = nx + ',' + ny;
+      const other = OCC.get(key);
+      if (other && other !== b) {
+        if (b.kind === 'R') {                       // hunter catches prey
+          b.e = Math.min(b.e + other.e * 0.6 + 20, 140);
+          remove(bots, other); OCC.delete(key);
+          b.x = nx; b.y = ny; OCC.set(key, b);
+        } else if (other.kind !== b.kind) {          // bump: back off
+          b.dir = rnd(8);
+        }
+      } else {
+        if (other === b) { /* stand still */ }
+        else { OCC.delete(b.x + ',' + b.y); b.x = nx; b.y = ny; OCC.set(key, b); }
+      }
+    }
+
+    // eat
+    if (b.kind === 'G') {
+      for (let i = food.length - 1; i >= 0; i--) {
+        if (food[i].x === b.x && food[i].y === b.y) { food.splice(i, 1); b.e = Math.min(b.e + 22, 140); break; }
+      }
+    }
+
+    // reproduce
+    if (b.e > 110 && bots.length + born.length < 220 && Math.random() < 0.06) {
+      b.e -= 45;
+      born.push(makeBot(b.kind, b.x, b.y, 45));
+    }
+
+    // death
+    if (b.e <= 0 || b.age > k.life) { remove(bots, b); OCC.delete(b.x + ',' + b.y); }
+  }
+  bots.push(...born);
+
+  draw();
+  $('#nR').textContent = bots.filter(b => b.kind === 'R').length;
+  $('#nG').textContent = bots.filter(b => b.kind === 'G').length;
+  $('#nB').textContent = bots.filter(b => b.kind === 'B').length;
+  $('#nF').textContent = food.length;
+  $('#tick').textContent = tick;
+}
+
+function draw() {
+  ctx.fillStyle = '#151a20'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#f3f0d7';
+  for (const f of food) ctx.fillRect(f.x * CELL + 2.5, f.y * CELL + 2.5, 3, 3);
+  for (const b of bots) {
+    const k = KINDS[b.kind];
+    const fade = b.age > k.life * 0.8 ? 0.45 : 1;
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = k.color;
+    ctx.fillRect(b.x * CELL + 1, b.y * CELL + 1, CELL - 2, CELL - 2);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function setRunning(on) {
+  running = on;
+  $('#play').textContent = on ? '⏸ Pause' : '▶ Evolve';
+  clearInterval(timer);
+  if (on) timer = setInterval(tickWorld, 60);
+}
+
+$('#play').addEventListener('click', () => setRunning(!running));
+$('#step').addEventListener('click', () => { if (!running) tickWorld(); });
+$('#seed').addEventListener('click', () => { seed(); draw(); });
+
+seed(); draw();
+</script>
+</body>
+</html>
