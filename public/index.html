@@ -63,6 +63,8 @@
     <div>
       <div class="spark-title">GENE POOL — species averages over time (0–10 scale)</div>
       <canvas id="genes" width="640" height="200"></canvas>
+      <div class="spark-title">POPULATION — bots by species &amp; food supply over time</div>
+      <canvas id="pops" width="640" height="160"></canvas>
       <table id="geneTable">
         <thead><tr><th>species</th><th>n</th><th>speed</th><th>sense</th><th>appetite</th><th>best gen</th></tr></thead>
         <tbody></tbody>
@@ -121,7 +123,7 @@ function mutate(g, rate) {
 }
 
 function seed() {
-  bots = []; food = []; tick = 0; genMax = 0; geneHist.length = 0;
+  bots = []; food = []; tick = 0; genMax = 0; geneHist.length = 0; popHist.length = 0;
   for (let i = 0; i < 14; i++) bots.push(makeBot('R', rnd(COLS), rnd(ROWS)));
   for (let i = 0; i < 22; i++) bots.push(makeBot('G', rnd(COLS), rnd(ROWS)));
   for (let i = 0; i < 22; i++) bots.push(makeBot('B', rnd(COLS), rnd(ROWS)));
@@ -217,6 +219,7 @@ function tickWorld() {
 
 // ---- gene pool stats & history ------------------------------------------------
 const geneHist = []; // {tick, R:{avg…}, G:{…}, B:{…}}
+const popHist = [];  // {tick, R, G, B, F} population counts
 function avgGenes(kind) {
   const list = bots.filter((b) => b.kind === kind);
   if (!list.length) return null;
@@ -224,9 +227,12 @@ function avgGenes(kind) {
   return { n: list.length, speed: avg('speed'), sense: avg('sense'), app: avg('app') };
 }
 function recordGenes() {
-  geneHist.push({ tick, R: avgGenes('R'), G: avgGenes('G'), B: avgGenes('B') });
+  const R = avgGenes('R'), G = avgGenes('G'), B = avgGenes('B');
+  geneHist.push({ tick, R, G, B });
   if (geneHist.length > 240) geneHist.shift();
-  drawGeneChart(); geneTable();
+  popHist.push({ tick, R: R ? R.n : 0, G: G ? G.n : 0, B: B ? B.n : 0, F: food.length });
+  if (popHist.length > 240) popHist.shift();
+  drawGeneChart(); drawPopChart(); geneTable();
 }
 function geneTable() {
   const rows = ['R', 'G', 'B'].map((k) => {
@@ -284,6 +290,31 @@ function drawGeneChart() {
   gctx.globalAlpha = 1;
   gctx.fillStyle = '#7d8a99'; gctx.font = '11px system-ui';
   gctx.fillText('solid = appetite · faded = speed / sense', 10, gh - 8);
+}
+
+const pctx = $('#pops').getContext('2d');
+function drawPopChart() {
+  const gw = $('#pops').width, gh = $('#pops').height;
+  pctx.fillStyle = '#10151b'; pctx.fillRect(0, 0, gw, gh);
+  pctx.strokeStyle = '#232c38'; pctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) { pctx.beginPath(); pctx.moveTo(0, gh * i / 4); pctx.lineTo(gw, gh * i / 4); pctx.stroke(); }
+  if (!popHist.length) return;
+  const max = Math.max(30, ...popHist.map((p) => Math.max(p.R, p.G, p.B, p.F)));
+  const line = (key, color, dash) => {
+    pctx.strokeStyle = color; pctx.lineWidth = 2; pctx.setLineDash(dash || []);
+    pctx.beginPath();
+    popHist.forEach((p, i) => {
+      const x = gw * i / 240, y = gh - (p[key] / max) * (gh - 14) - 4;
+      if (i === 0) pctx.moveTo(x, y); else pctx.lineTo(x, y);
+    });
+    pctx.stroke(); pctx.setLineDash([]);
+  };
+  line('F', 'rgba(243,240,215,.55)', [4, 4]);   // food supply, dashed
+  line('R', '#ff6b6b');                          // hunters
+  line('G', '#51cf66');                          // foragers
+  line('B', '#4dabf7');                          // drones
+  pctx.fillStyle = '#7d8a99'; pctx.font = '11px system-ui';
+  pctx.fillText('peak ' + max + ' · dashed = food', 8, 14);
 }
 
 function stats() {
